@@ -2,11 +2,9 @@ package ru.upsic.mapautoregistrar.component;
 
 import org.springframework.stereotype.Component;
 import ru.upsic.mapautoregistrar.annotation.WithKey;
-import ru.upsic.mapautoregistrar.api.TestStrategy;
+import ru.upsic.mapautoregistrar.api.TestStrategyWithKey;
 
 @Component
 @WithKey(value = "ALPHA")
-public class TestStrategyAlpha implements TestStrategy {
-    @Override
-    public String getKey() { return "ALPHA"; }
+public class TestStrategyWithKeyAlpha implements TestStrategyWithKey {
 }

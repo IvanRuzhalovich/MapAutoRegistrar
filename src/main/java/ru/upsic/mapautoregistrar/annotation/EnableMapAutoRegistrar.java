@@ -9,8 +9,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Включает автоматическую регистрацию мап.
- * Необходимо указать базовый пакет Вашего приложения
+ * Включает автоматическую регистрацию мап
  */
 @Target(ElementType.TYPE)
 @Retention(value = RetentionPolicy.RUNTIME)

@@ -5,11 +5,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import ru.upsic.mapautoregistrar.api.TestStrategy;
-import ru.upsic.mapautoregistrar.component.TestService;
-import ru.upsic.mapautoregistrar.component.TestStrategyAlpha;
-import ru.upsic.mapautoregistrar.component.TestStrategyBeta;
-import ru.upsic.mapautoregistrar.component.TestStrategyDuplicate;
+import ru.upsic.mapautoregistrar.api.TestStrategyWithKey;
+import ru.upsic.mapautoregistrar.api.TestStrategyWithKeyMethod;
+import ru.upsic.mapautoregistrar.component.*;
 import ru.upsic.mapautoregistrar.config.TestConfig;
 
 import java.util.HashMap;
@@ -42,16 +40,27 @@ class KeyedMapInjectionPostProcessorTest {
         context.refresh();
 
         TestService testService = context.getBean(TestService.class);
-        Map<String, TestStrategy> strategies = testService.getStrategiesByKey();
+        Map<String, TestStrategyWithKey> strategiesByKey = testService.getStrategiesByKey();
+        Map<String, TestStrategyWithKeyMethod> strategiesByKeyMethod = testService.getStrategiesByKeyMethod();
 
-        assertThat(strategies)
+        assertThat(strategiesByKey)
                 .isNotNull()
                 .hasSize(2)
                 .containsOnlyKeys("ALPHA", "BETA")
                 .extracting("ALPHA", "BETA")
                 .containsExactlyInAnyOrder(
-                        context.getBean(TestStrategyAlpha.class),
-                        context.getBean(TestStrategyBeta.class)
+                        context.getBean(TestStrategyWithKeyAlpha.class),
+                        context.getBean(TestStrategyWithKeyBeta.class)
+                );
+
+        assertThat(strategiesByKeyMethod)
+                .isNotNull()
+                .hasSize(2)
+                .containsOnlyKeys("ALPHA", "BETA")
+                .extracting("ALPHA", "BETA")
+                .containsExactlyInAnyOrder(
+                        context.getBean(TestStrategyWithKeyMethodAlpha.class),
+                        context.getBean(TestStrategyWithKeyMethodBeta.class)
                 );
     }
 
@@ -62,11 +71,15 @@ class KeyedMapInjectionPostProcessorTest {
         context.refresh();
 
         TestService testService = context.getBean(TestService.class);
-        Map<String, TestStrategy> strategies = testService.getStrategiesByKey();
+        Map<String, TestStrategyWithKey> strategiesByKey = testService.getStrategiesByKey();
+        Map<String, TestStrategyWithKeyMethod> strategiesByKeyMethod = testService.getStrategiesByKeyMethod();
 
-        assertThat(strategies)
+        assertThat(strategiesByKey)
                 .doesNotContainKey("testStrategyDuplicate")
-                .doesNotContainValue(context.getBean(TestStrategyDuplicate.class));
+                .doesNotContainValue(context.getBean(TestStrategyWithKeyDuplicate.class));
+
+        assertThat(strategiesByKeyMethod)
+                .doesNotContainKey("testStrategyDuplicate");
     }
 
     @Test
@@ -76,11 +89,11 @@ class KeyedMapInjectionPostProcessorTest {
         context.refresh();
 
         TestService testService = context.getBean(TestService.class);
-        Map<String, TestStrategy> strategiesByName = testService.getStrategiesByName();
+        Map<String, TestStrategyWithKey> strategiesByName = testService.getStrategiesByName();
 
         assertThat(strategiesByName)
-                .containsKey("testStrategyAlpha")
-                .containsKey("testStrategyBeta");
+                .containsKey("testStrategyWithKeyAlpha")
+                .containsKey("testStrategyWithKeyBeta");
         assertThat(strategiesByName.keySet())
                 .doesNotContain("ALPHA")
                 .doesNotContain("BETA");
@@ -92,7 +105,7 @@ class KeyedMapInjectionPostProcessorTest {
         context.register(TestConfig.class);
         context.refresh();
 
-        TestService service = new TestService(new HashMap<>(), new HashMap<>());
+        TestService service = new TestService(new HashMap<>(), new HashMap<>(), new HashMap<>());
         KeyedMapPostProcessor processor =
                 context.getBean(KeyedMapPostProcessor.class);
 
@@ -101,40 +114,6 @@ class KeyedMapInjectionPostProcessorTest {
         assertThatCode(() ->
                 processor.postProcessAfterInitialization(service, "testService")
         ).doesNotThrowAnyException();
-    }
-
-    @Test
-    @DisplayName("Поле с @KeyedMap получает Map с ключами из @WithKey")
-    void shouldInjectMapWithWithKeyAnnotations() {
-        context.register(TestConfig.class);
-        context.refresh();
-
-        TestService testService = context.getBean(TestService.class);
-        Map<String, TestStrategy> strategies = testService.getStrategiesByKey();
-
-        assertThat(strategies)
-                .isNotNull()
-                .hasSize(2)
-                .containsOnlyKeys("ALPHA", "BETA")
-                .containsEntry("ALPHA", context.getBean(TestStrategyAlpha.class))
-                .containsEntry("BETA", context.getBean(TestStrategyBeta.class));
-    }
-
-    @Test
-    @DisplayName("Поле без @KeyedMap остаётся с ключами-именами бинов")
-    void shouldNotTransformMapWithoutKeyedMapAnnotation() {
-        context.register(TestConfig.class);
-        context.refresh();
-
-        TestService testService = context.getBean(TestService.class);
-        Map<String, TestStrategy> strategiesByName = testService.getStrategiesByName();
-
-        assertThat(strategiesByName)
-                .isNotNull()
-                .containsKey("testStrategyAlpha")
-                .containsKey("testStrategyBeta")
-                .doesNotContainKey("ALPHA")
-                .doesNotContainKey("BETA");
     }
 
     @Test

@@ -4,7 +4,8 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import ru.upsic.mapautoregistrar.annotation.KeyedMap;
-import ru.upsic.mapautoregistrar.api.TestStrategy;
+import ru.upsic.mapautoregistrar.api.TestStrategyWithKey;
+import ru.upsic.mapautoregistrar.api.TestStrategyWithKeyMethod;
 
 import java.util.Map;
 
@@ -14,8 +15,11 @@ import java.util.Map;
 public class TestService {
 
     @KeyedMap
-    private final Map<String, TestStrategy> strategiesByKey;
+    private final Map<String, TestStrategyWithKey> strategiesByKey;
 
-    private final Map<String, TestStrategy> strategiesByName;
+    private final Map<String, TestStrategyWithKey> strategiesByName;
+
+    @KeyedMap
+    private final Map<String, TestStrategyWithKeyMethod> strategiesByKeyMethod;
 
 }

@@ -43,6 +43,7 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
     private static final String MSG_KEY_METHOD_WITH_PARAMS =
             "Метод [%s::%s] с аннотацией @KeyMethod не должен принимать параметры (найдено: %d).\n" +
                     "Решение: удалите все параметры метода";
+    private static final String DUPLICATE_KEY = "Дублирующийся ключ '%s' — бин '%s' перезапишет '%s'";
 
     private ApplicationContext applicationContext;
 
@@ -53,15 +54,12 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
 
     @Override
     public Object postProcessAfterInitialization(@NonNull Object bean, @NonNull String beanName) throws BeansException {
-
         if (isInfrastructureBean(beanName)) {
             return bean;
         }
-        try {
-            injectCustomMaps(bean);
-        } catch (Exception e) {
-            log.error("Ошибка инъекции кастомных мап в бин '{}': {}. Инъекция не выполнена", beanName, e.getMessage(), e);
-        }
+
+        injectCustomMaps(bean);
+
         return bean;
     }
 
@@ -110,39 +108,63 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
 
             if (keyType == String.class) {
                 // String ключи
-                Map<?, ?> originalMap = (Map<?, ?>) field.get(targetBean);
+                Map<?, ?> beansByName = getBeansOfTypeFromOriginalMap(field, targetBean, valueType);
 
-                if (CollectionUtils.isEmpty(originalMap)) {
-                    log.debug("Поле {}.{} пустое — пропускаем", field.getDeclaringClass().getSimpleName(), field.getName());
-                    return;
+                if (CollectionUtils.isEmpty(beansByName)) {
+                    log.warn("Нет бинов типа {} для поля {}.{}",
+                            valueType.getSimpleName(), field.getDeclaringClass().getSimpleName(), field.getName());
+                    customMap = Collections.emptyMap();
+                } else {
+                    Method keyMethod = findKeyMethodInInterface(valueType);
+                    if (nonNull(keyMethod)) {
+                        customMap = buildKeyedMapFromMethod(beansByName, keyMethod);
+                    } else {
+                        customMap = buildKeyedMapFromAnnotation(beansByName);
+                    }
                 }
-
-                customMap = buildKeyedMapFromAnnotation(originalMap);
-
             } else {
                 Map<String, ?> beansByName = applicationContext.getBeansOfType(valueType);
 
                 if (beansByName.isEmpty()) {
-                    log.debug("Не найдено бинов типа {} для поля {}.{} — создаём пустую мапу",
+                    log.warn("Не найдено бинов типа {} для поля {}.{}",
                             valueType.getSimpleName(),
                             field.getDeclaringClass().getSimpleName(),
                             field.getName());
                     customMap = Collections.emptyMap();
                 } else {
                     // Трансформируем Map<String, Bean> → Map<KeyType, Bean> через @KeyMethod
-                    customMap = buildKeyedMapFromMethod(beansByName, valueType);
+                    Method keyMethod = findKeyMethodInInterface(valueType);
+                    customMap = buildKeyedMapFromMethod(beansByName, keyMethod);
                 }
             }
 
             ReflectionUtils.setField(field, targetBean, customMap);
 
-        } catch (IllegalAccessException e) {
-            log.warn("Не удалось прочитать поле {}.{}: {}",
-                    field.getDeclaringClass().getSimpleName(), field.getName(), e.getMessage());
+        } catch (MapAutoRegistrarException e) {
+            throw e;
         } catch (Exception e) {
             log.warn("Ошибка подмены Map в поле {}.{}: {}",
-                    field.getDeclaringClass().getSimpleName(), field.getName(), e.getMessage());
+                    field.getDeclaringClass().getSimpleName(), field.getName(), e.getMessage(), e);
         }
+
+    }
+
+    /**
+     * Извлекает исходную мапу из поля или собирает бины из контекста, если поле пустое/нулевое
+     */
+    @SuppressWarnings("unchecked")
+    private <T> Map<String, T> getBeansOfTypeFromOriginalMap(Field field, Object targetBean, Class<T> valueType) {
+        try {
+            Map<?, ?> originalMap = (Map<?, ?>) field.get(targetBean);
+
+            // Если в поле уже есть бины используем их
+            if (nonNull(originalMap) && !originalMap.isEmpty()) {
+                return (Map<String, T>) originalMap;
+            }
+        } catch (IllegalAccessException ignored) {
+            // Игнорируем, переход к поиску в контексте
+        }
+        return applicationContext.getBeansOfType(valueType);
     }
 
     /**
@@ -169,7 +191,8 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
             String registryKey = keyAnnotation.value();
 
             if (result.containsKey(registryKey)) {
-                log.warn("Дублирующийся ключ '{}' — бин '{}' перезапишет '{}'", registryKey, beanName, result.get(registryKey));
+                String message = String.format(DUPLICATE_KEY, registryKey, beanName, result.get(registryKey));
+                log.warn(message);
             }
 
             result.put(registryKey, bean);
@@ -182,16 +205,13 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
      * Map<beanName, Bean> → Map<method.invoke(bean), Bean>
      */
     @SuppressWarnings("unchecked")
-    private <K, T> Map<K, T> buildKeyedMapFromMethod(Map<?, ?> originalMap, Class<T> valueType) {
-        // Находим метод с @KeyMethod в интерфейсе
-        Method keyMethod = findUniqueKeyMethodOrThrow(valueType);
-
+    private <K, T> Map<K, T> buildKeyedMapFromMethod(Map<?, ?> originalMap, Method keyMethod) {
         if (isNull(keyMethod)) {
-            log.warn("В интерфейсе {} не найден метод с @KeyMethod — пропускаем трансформацию", valueType.getSimpleName());
+            log.warn("Не найден метод с @KeyMethod");
             return (Map<K, T>) originalMap;
         }
 
-        Map<K, T> result = HashMap.newHashMap(originalMap.size());
+        Map<K, T> result = new HashMap<>(originalMap.size());
 
         for (Map.Entry<?, ?> entry : originalMap.entrySet()) {
             String beanName = (String) entry.getKey();
@@ -202,20 +222,19 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
                 @SuppressWarnings("unchecked")
                 K customKey = (K) ReflectionUtils.invokeMethod(keyMethod, bean);
 
-                if (customKey == null) {
-                    log.warn("Метод @KeyMethod вернул null для бина '{}' — пропускаем", beanName);
+                if (isNull(customKey)) {
+                    log.debug("Метод @KeyMethod вернул null для бина '{}' — пропускаем", beanName);
                     continue;
                 }
 
                 if (result.containsKey(customKey)) {
-                    log.warn("Дублирующийся ключ '{}' — бин '{}' перезапишет '{}'",
-                            customKey, beanName, result.get(customKey));
+                    String message = String.format(DUPLICATE_KEY, customKey, beanName, result.get(customKey));
+                    log.warn(message);
                 }
                 result.put(customKey, bean);
 
             } catch (Exception e) {
-                log.warn("Не удалось получить ключ через @KeyMethod для бина '{}': {}",
-                        beanName, e.getMessage());
+                log.debug("Ошибка вызова @KeyMethod для бина '{}': {}", beanName, e.getMessage());
             }
         }
         return result;
@@ -243,13 +262,10 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
     /**
      * Поиск метода с аннотацией @KeyMethod
      */
-    public static Method findUniqueKeyMethodOrThrow(Class<?> iface) {
-        List<Method> annotatedMethods = new ArrayList<>();
-        for (Method method : iface.getDeclaredMethods()) {
-            if (method.isAnnotationPresent(KeyMethod.class)) {
-                annotatedMethods.add(method);
-            }
-        }
+    private Method findKeyMethodInInterface(Class<?> iface) {
+        List<Method> annotatedMethods = Arrays.stream(ReflectionUtils.getAllDeclaredMethods(iface))
+                .filter(m -> m.isAnnotationPresent(KeyMethod.class))
+                .collect(Collectors.toList());
 
         if (CollectionUtils.isEmpty(annotatedMethods))
             return null;
@@ -261,11 +277,11 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
                     .collect(Collectors.joining(COMMA_SPACE));
             throw new MapAutoRegistrarException(String.format(MSG_MULTIPLE_KEY_METHODS, iface.getSimpleName(), methodSignatures));
         }
-        return getKeyMethod(iface, annotatedMethods);
+        return validateKeyMethod(iface, annotatedMethods);
     }
 
-    private static Method getKeyMethod(Class<?> iface, List<Method> annotatedMethods) {
-        Method keyMethod = annotatedMethods.getFirst();
+    private Method validateKeyMethod(Class<?> iface, List<Method> annotatedMethods) {
+        Method keyMethod = annotatedMethods.get(0);
 
         if (keyMethod.getReturnType().equals(void.class)) {
             throw new MapAutoRegistrarException(String.format(MSG_VOID_KEY_METHOD, iface.getSimpleName(), keyMethod.getName()));
