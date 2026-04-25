@@ -1,7 +1,6 @@
 package ru.upsic.mapautoregistrar.processor;
 
 import lombok.extern.slf4j.Slf4j;
-import org.jspecify.annotations.NonNull;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanDefinition;
@@ -11,6 +10,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.core.ResolvableType;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.ReflectionUtils;
@@ -75,7 +75,7 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
 
         // Сканируем ВСЮ иерархию
         ReflectionUtils.doWithFields(targetClass, field -> {
-            var strategyMap = AnnotatedElementUtils.findMergedAnnotation(field, KeyedMap.class);
+            KeyedMap strategyMap = AnnotatedElementUtils.findMergedAnnotation(field, KeyedMap.class);
 
             if (nonNull(strategyMap) && Map.class.isAssignableFrom(field.getType())) {
                 performInjection(targetBean, field);
@@ -105,39 +105,25 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
             }
 
             Map<?, ?> customMap;
-
+            Map<?, ?> beansByName;
             if (keyType == String.class) {
                 // String ключи
-                Map<?, ?> beansByName = getBeansOfTypeFromOriginalMap(field, targetBean, valueType);
+                beansByName = getBeansOfTypeFromOriginalMap(field, targetBean, valueType);
+            } else
+                beansByName = applicationContext.getBeansOfType(valueType);
 
-                if (CollectionUtils.isEmpty(beansByName)) {
-                    log.warn("Нет бинов типа {} для поля {}.{}",
-                            valueType.getSimpleName(), field.getDeclaringClass().getSimpleName(), field.getName());
-                    customMap = Collections.emptyMap();
-                } else {
-                    Method keyMethod = findKeyMethodInInterface(valueType);
-                    if (nonNull(keyMethod)) {
-                        customMap = buildKeyedMapFromMethod(beansByName, keyMethod);
-                    } else {
-                        customMap = buildKeyedMapFromAnnotation(beansByName);
-                    }
-                }
+            if (CollectionUtils.isEmpty(beansByName)) {
+                log.warn("Нет бинов типа {} для поля {}.{}",
+                        valueType.getSimpleName(), field.getDeclaringClass().getSimpleName(), field.getName());
+                customMap = Collections.emptyMap();
             } else {
-                Map<String, ?> beansByName = applicationContext.getBeansOfType(valueType);
-
-                if (beansByName.isEmpty()) {
-                    log.warn("Не найдено бинов типа {} для поля {}.{}",
-                            valueType.getSimpleName(),
-                            field.getDeclaringClass().getSimpleName(),
-                            field.getName());
-                    customMap = Collections.emptyMap();
-                } else {
-                    // Трансформируем Map<String, Bean> → Map<KeyType, Bean> через @KeyMethod
-                    Method keyMethod = findKeyMethodInInterface(valueType);
+                Method keyMethod = findKeyMethodInInterface(valueType);
+                if (nonNull(keyMethod)) {
                     customMap = buildKeyedMapFromMethod(beansByName, keyMethod);
+                } else {
+                    customMap = buildKeyedMapFromAnnotation(beansByName);
                 }
             }
-
             ReflectionUtils.setField(field, targetBean, customMap);
 
         } catch (MapAutoRegistrarException e) {
@@ -146,7 +132,6 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
             log.warn("Ошибка подмены Map в поле {}.{}: {}",
                     field.getDeclaringClass().getSimpleName(), field.getName(), e.getMessage(), e);
         }
-
     }
 
     /**
@@ -158,7 +143,13 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
             Map<?, ?> originalMap = (Map<?, ?>) field.get(targetBean);
 
             // Если в поле уже есть бины используем их
-            if (nonNull(originalMap) && !originalMap.isEmpty()) {
+            if (!CollectionUtils.isEmpty(originalMap)) {
+                Object firstKey = originalMap.keySet().iterator().next();
+                if (!(firstKey instanceof String)) {
+                    log.warn("Поле {}.{} ожидает String-ключи, но найдено ключ типа {} — пропускаем оригинальную мапу",
+                            field.getDeclaringClass().getSimpleName(), field.getName(), firstKey.getClass().getSimpleName());
+                    return applicationContext.getBeansOfType(valueType);
+                }
                 return (Map<String, T>) originalMap;
             }
         } catch (IllegalAccessException ignored) {
@@ -250,11 +241,14 @@ public class KeyedMapPostProcessor implements BeanPostProcessor, ApplicationCont
         }
 
         // Проверка роли
-        if (applicationContext instanceof ConfigurableListableBeanFactory beanFactory
-                && beanFactory.containsBeanDefinition(beanName)) {
+        if (applicationContext instanceof ConfigurableListableBeanFactory) {
+            ConfigurableListableBeanFactory beanFactory =
+                    (ConfigurableListableBeanFactory) applicationContext;
 
-            BeanDefinition bd = beanFactory.getBeanDefinition(beanName);
-            return bd.getRole() == ROLE_INFRASTRUCTURE;
+            if (beanFactory.containsBeanDefinition(beanName)) {
+                BeanDefinition bd = beanFactory.getBeanDefinition(beanName);
+                return bd.getRole() == ROLE_INFRASTRUCTURE;
+            }
         }
         return false;
     }
